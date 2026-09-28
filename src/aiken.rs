@@ -1,20 +1,8 @@
 use zed::lsp::CompletionKind;
 use zed::{CodeLabel, CodeLabelSpan, LanguageServerId};
-use zed_extension_api::{self as zed, Result};
+use zed_extension_api::{self as zed, settings::LspSettings, EnvVars, Result};
 
 struct AikenExtension;
-
-impl AikenExtension {
-    fn language_server_binary_path(
-        &mut self,
-        _language_server_id: &LanguageServerId,
-        worktree: &zed::Worktree,
-    ) -> Result<String> {
-        worktree
-            .which("aiken")
-            .ok_or("aiken not found; https://aiken-lang.org/installation-instructions".to_string())
-    }
-}
 
 impl zed::Extension for AikenExtension {
     fn new() -> Self {
@@ -26,11 +14,33 @@ impl zed::Extension for AikenExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        Ok(zed::Command {
-            command: self.language_server_binary_path(language_server_id, worktree)?,
-            args: vec!["lsp".to_string()],
-            env: Default::default(),
-        })
+        // Users can point the extension at a specific Aiken binary (for example one
+        // installed through `aikup`) via:
+        //
+        //   "lsp": { "aiken": { "binary": { "path": "/path/to/aiken" } } }
+        //
+        // Everything is optional; without any settings we fall back to `aiken` on $PATH.
+        let settings =
+            LspSettings::for_worktree(language_server_id.as_ref(), worktree).unwrap_or_default();
+        let binary = settings.binary;
+
+        let command = match binary.as_ref().and_then(|binary| binary.path.clone()) {
+            Some(path) => path,
+            None => worktree.which("aiken").ok_or_else(aiken_not_found)?,
+        };
+
+        let args = binary
+            .as_ref()
+            .and_then(|binary| binary.arguments.clone())
+            .unwrap_or_else(|| vec!["lsp".to_string()]);
+
+        let env: EnvVars = binary
+            .and_then(|binary| binary.env)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        Ok(zed::Command { command, args, env })
     }
 
     fn label_for_completion(
@@ -71,6 +81,12 @@ impl zed::Extension for AikenExtension {
 }
 
 zed::register_extension!(AikenExtension);
+
+fn aiken_not_found() -> String {
+    "aiken not found; install it via https://aiken-lang.org/installation-instructions, or set \
+     `lsp.aiken.binary.path` to a specific binary"
+        .to_string()
+}
 
 fn strip_newlines_from_detail(detail: &str) -> String {
     let without_newlines = detail
